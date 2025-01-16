@@ -40,11 +40,12 @@ import time
 from datetime import datetime
 from dateutil.parser import parse as dateparse
 
-from PySide2.QtWidgets import *
+from PySide6.QtWidgets import *
 #from PySide2.QtWebEngineWidgets import *
-from PySide2.QtCore import *
-from PySide2.QtSql import *
-from PySide2.QtGui import *
+from PySide6.QtCore import *
+from PySide6.QtSql import *
+from PySide6.QtGui import *
+import gzip
 import argparse
 
 def gui(dbfile):
@@ -155,7 +156,7 @@ def gui(dbfile):
     mainwin2.setCentralWidget(mainWin)
     mainwin2.addToolBar(toolbar)
 
-    availableGeometry = app.desktop().availableGeometry(mainWin)
+    availableGeometry = app.primaryScreen().geometry() #app.desktop().availableGeometry(mainWin)
     mainwin2.resize(availableGeometry.width() * 2 / 3, availableGeometry.height() * 2 / 3)
 
     db = QSqlDatabase.addDatabase("QSQLITE")
@@ -199,7 +200,7 @@ def dateparse_normalized(datestr):
     for tmp in datestr.split(','): # Remove everything before and after (potential) comma, since they are error prone (e.g. if the string starts with "Wen, ..." instead of "Wed, ..." the parser would fail without this. Same with regards to the end of the string)
         if re.search(r'..:..:..', tmp):
             #tmp = re.sub(r'(.*..:..:..) .*', '\\1', tmp)
-            tmp = re.sub(r'(.*..:..:[^\(]*).*', '\\1', tmp) # FIXME: keep year e.g. in case of 'Wed Feb 29 07:02:03 +0000 2012'
+            tmp = re.sub(r'(.*..:..:[^\(a-zA-Z]*).*', '\\1', tmp) # FIXME: keep year e.g. in case of 'Wed Feb 29 07:02:03 +0000 2012'
             break
     return int(datetime.timestamp(dateparse(tmp)))
     # FIXME "UnknownTimezoneWarning: tzname EDT identified but not understood.  Pass `tzinfos` argument in order to correctly return a timezone-aware datetime.  In a future version, this will raise an exception."
@@ -329,6 +330,9 @@ def scan_mbox(mboxfile, outdir):
         ltot+=len(message.as_string())
         sys.stderr.write(f"\r\033[KProcessing message {k} ({ltot>>20}/{mbox_size>>20} MB) : {msgdec['Date']}")
 
+def scan_maildir(rootdir, outdir, includelist=[]):
+    pass
+
 def scandir_gmvault(rootdir, outdir, includelist=[]): # '2009-01'
     if not os.path.exists(outdir):
         os.makedirs(outdir)
@@ -376,9 +380,10 @@ def scandir_gmvault(rootdir, outdir, includelist=[]): # '2009-01'
             if not os.path.exists(outdir + '/' + labelstr):
                 os.makedirs(outdir + '/' + labelstr)
 
-            with open(dirname+'/'+entry) as fp:
-                #msg = email.parser.Parser().parse(fp)
-                msg=email.message_from_file(fp)
+            fp = gzip.open(dirname+'/'+entry, "rt") if entry.endswith(".eml.gz") else open(dirname+'/'+entry)
+            #msg = email.parser.Parser().parse(fp)
+            msg=email.message_from_file(fp)
+            fp.close()
             msgdec = decodemail(msg, outdir, labelstr)
             if msgdec == None:
                 continue
@@ -430,7 +435,7 @@ def decodemail(msg, outdir1, labelstr='Default'):
     if not 'Body' in msgdec and not 'BodyHTML' in msgdec:
         return None
 
-    if not "BodyHTML" in msgdec and "Body" in msgdec and msgdec['Body'].find('[cid:') and len(msgdec['EmbeddedImg'].keys())>0:
+    if not "BodyHTML" in msgdec and msgdec['Body'].find('[cid:') and len(msgdec['EmbeddedImg'].keys())>0:
         # When there is only plain text together with embedded images, generate the corresponding HTML with references to images
         msgdec["BodyHTML"] = "<html><head><title></title></head><body><pre>" + re.sub(r'\[(cid:.*)\]', '<img src="\\1">', msgdec['Body']) + "</pre></body></html>"
     if 'BodyHTML' in msgdec and msgdec['BodyHTML'].find('<img src="cid:'):
@@ -479,10 +484,7 @@ def decodepart(part, msgdec, level=0):
                 k_base=filename
                 k_ext=""
             rx = re.search(r'([^_\.]+)__([0-9]+)',k_base)
-            if rx:
-                filename = rx.group(1) + '__' + str(int(rx.group(2))+1) + k_ext
-            else:
-                filename = k_base + '__2' + k_ext
+            filename = rx.group(1) + '__' + str(int(rx.group(2))+1) + k_ext if rx else k_base + '__2' + k_ext
 
         with open(dir+'/'+filename, 'wb') as fp:
             fp.write(filecontents)
@@ -591,7 +593,7 @@ class MDB():
         cur.executescript('''
             drop table if exists messages;
             create table messages(
-                id integer primary key autoincrement,
+                id integer primary key,
                 gmail_msgid text,
                 gmail_threadid integer,
                 gmail_labels text,
@@ -638,7 +640,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
 
-    parser_createdb = subparsers.add_parser('createdb', help="Scan directory")
+    parser_createdb = subparsers.add_parser('gmvault', help="Scan directory")
     parser_createdb.add_argument("gmvault_dir", help="GMVault dir or mountpoint")
     parser_createdb.add_argument("outdir", help="Output dir")
 
@@ -651,7 +653,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    if args.subcommand=="createdb":
+    if args.subcommand=="gmvault":
         scandir_gmvault(args.gmvault_dir + "/db", args.outdir)
     elif args.subcommand=="mbox":
         scan_mbox(args.mboxfile,args.outdir)
